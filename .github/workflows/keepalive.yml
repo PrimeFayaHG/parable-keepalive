@@ -1,0 +1,67 @@
+name: Keep site awake
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Every 10 minutes, offset from the top of the hour. GitHub drops or delays
+    # schedules most often at :00. Each run then pings again after 4 and 8
+    # minutes, so a missed start still leaves a request inside Render's
+    # 15-minute idle window.
+    - cron: "2,12,22,32,42,52 * * * *"
+    # A weekly commit keeps this public repo from looking idle. GitHub disables
+    # scheduled workflows after 60 days without repository activity.
+    - cron: "17 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: keepalive
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule != '17 6 * * 1'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Request the live homepage
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          ping_home() {
+            curl --fail --silent --show-error \
+              --retry 2 --retry-all-errors --retry-delay 10 \
+              --max-time 90 \
+              --output /tmp/parable-home.html \
+              --write-out "http_code=%{http_code} time=%{time_total}\n" \
+              --user-agent "parable-keepalive" \
+              "https://parableadvisory.com/"
+            grep -q "Parable Advisory" /tmp/parable-home.html
+            echo "homepage ok $(date -u +%H:%M:%SZ)"
+          }
+          ping_home
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            sleep 240
+            ping_home
+            sleep 240
+            ping_home
+          fi
+
+  stay-active:
+    if: github.event.schedule == '17 6 * * 1'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record repository activity
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          date -u +%Y-%m-%dT%H:%M:%SZ > LAST_ACTIVITY.txt
+          git add LAST_ACTIVITY.txt
+          git commit -m "chore: keep scheduled workflow active"
+          git push
